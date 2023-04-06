@@ -2,6 +2,8 @@
 
 #if RETRO_USE_MOD_LOADER
 
+using namespace RSDK;
+
 #if RETRO_REV0U
 #include "Legacy/ModAPILegacy.cpp"
 #endif
@@ -16,32 +18,30 @@ namespace fs = std::filesystem;
 #else
 bool fs::exists(fs::path path)
 {
-    auto *jni = GetJNISetup();
+    auto *jni        = GetJNISetup();
     jbyteArray array = jni->env->NewByteArray(path.string().length());
-    jni->env->SetByteArrayRegion(array, 0, path.string().length(), (jbyte*)path.string().c_str());
+    jni->env->SetByteArrayRegion(array, 0, path.string().length(), (jbyte *)path.string().c_str());
     return jni->env->CallBooleanMethod(jni->thiz, fsExists, array);
 }
 
 bool fs::is_directory(fs::path path)
 {
-    auto *jni = GetJNISetup();
+    auto *jni        = GetJNISetup();
     jbyteArray array = jni->env->NewByteArray(path.string().length());
-    jni->env->SetByteArrayRegion(array, 0, path.string().length(), (jbyte*)path.string().c_str());
+    jni->env->SetByteArrayRegion(array, 0, path.string().length(), (jbyte *)path.string().c_str());
     return jni->env->CallBooleanMethod(jni->thiz, fsIsDir, array);
 }
 
 fs::path_list fs::directory_iterator(fs::path path)
 {
-    auto *jni = GetJNISetup();
+    auto *jni        = GetJNISetup();
     jbyteArray array = jni->env->NewByteArray(path.string().length());
-    jni->env->SetByteArrayRegion(array, 0, path.string().length(), (jbyte*)path.string().c_str());
+    jni->env->SetByteArrayRegion(array, 0, path.string().length(), (jbyte *)path.string().c_str());
     return fs::path_list((jobjectArray)jni->env->CallObjectMethod(jni->thiz, fsDirIter, array));
 }
 #endif
 
 #include "iniparser/iniparser.h"
-
-using namespace RSDK;
 
 int32 RSDK::currentObjectID = 0;
 std::vector<ObjectClass *> allocatedInherits;
@@ -233,7 +233,7 @@ void RSDK::LoadModSettings()
 
 #if RETRO_REV0U
     modSettings.versionOverride = 0;
-    modSettings.forceScripts    = false;
+    modSettings.forceScripts    = customSettings.forceScripts;
 #endif
 
     int32 activeModCount = (int32)ActiveMods().size();
@@ -242,9 +242,9 @@ void RSDK::LoadModSettings()
 
         if (mod->redirectSaveRAM) {
             if (SKU::userFileDir[0])
-                sprintf(customUserFileDir, "%smods/%s/", SKU::userFileDir, mod->id.c_str());
+                sprintf(customUserFileDir, "%smods/%s/", SKU::userFileDir, mod->folderName.c_str());
             else
-                sprintf(customUserFileDir, "mods/%s/", mod->id.c_str());
+                sprintf(customUserFileDir, "mods/%s/", mod->folderName.c_str());
         }
 
         modSettings.redirectSaveRAM |= mod->redirectSaveRAM ? 1 : 0;
@@ -335,7 +335,7 @@ bool32 RSDK::ScanModFolder(ModInfo *info, const char *targetFile, bool32 fromLoa
     if (!info)
         return false;
 
-    const std::string modDir = info->path + "/" + info->id;
+    const std::string modDir = info->path;
 
     if (!targetFile)
         info->fileMap.clear();
@@ -398,7 +398,6 @@ bool32 RSDK::ScanModFolder(ModInfo *info, const char *targetFile, bool32 fromLoa
 
             int32 i    = 0;
             int32 bars = 1;
-            int32 logs = 1;
 
             for (auto dirFile : files) {
                 std::string folderPath = dirFile.path().string().substr(dataPath.string().length() + 1);
@@ -517,7 +516,7 @@ void RSDK::LoadMods(bool newOnly, bool32 getVersion)
 
             for (int32 m = 0; m < c; ++m) {
                 if (newOnly && std::find_if(modList.begin(), modList.end(), [&keys, &m](ModInfo mod) {
-                                   return mod.id == string(keys[m] + 5);
+                                   return mod.folderName == string(keys[m] + 5);
                                }) != modList.end())
                     continue;
                 ModInfo info  = {};
@@ -540,21 +539,17 @@ void RSDK::LoadMods(bool newOnly, bool32 getVersion)
             for (auto de : rdi) {
                 if (de.is_directory()) {
                     fs::path modDirPath = de.path();
+                    ModInfo info        = {};
+                    std::string folder  = modDirPath.filename().string();
 
-                    ModInfo info = {};
+                    if (std::find_if(modList.begin(), modList.end(), [&folder](ModInfo m) { return m.folderName == folder; }) == modList.end()) {
 
-                    std::string modDir            = modDirPath.string().c_str();
-                    const std::string mod_inifile = modDir + "/mod.ini";
-                    std::string folder            = modDirPath.filename().string();
-
-                    if (std::find_if(modList.begin(), modList.end(), [&folder](ModInfo m) { return m.id == folder; }) == modList.end()) {
-
-                        const std::string modDir = modPath.string() + "/" + modDirPath.filename().string();
+                        const std::string modDir = modPath.string() + "/" + folder;
 
                         FileIO *f = fOpen((modDir + "/mod.ini").c_str(), "r");
                         if (f) {
                             fClose(f);
-                            LoadMod(&info, modPath.string(), modDirPath.filename().string(), false, getVersion);
+                            LoadMod(&info, modPath.string(), folder, false, getVersion);
                             modList.push_back(info);
                         }
                     }
@@ -643,9 +638,10 @@ bool32 RSDK::LoadMod(ModInfo *info, std::string modsPath, std::string folder, bo
         fClose(f);
         auto ini = iniparser_load((modDir + "/mod.ini").c_str());
 
-        info->path   = modsPath;
-        info->id     = folder;
-        info->active = active;
+        info->path       = modDir;
+        info->folderName = folder;
+        info->id         = iniparser_getstring(ini, ":ModID", folder.c_str());
+        info->active     = active;
 
         info->name    = iniparser_getstring(ini, ":Name", "Unnamed Mod");
         info->desc    = iniparser_getstring(ini, ":Description", "");
@@ -727,7 +723,7 @@ bool32 RSDK::LoadMod(ModInfo *info, std::string modsPath, std::string folder, bo
                             linked = true;
                         }
                         else {
-                            PrintLog(PRINT_ERROR, "[MOD] ERROR: ailed to find 'LinkModLogic' -> %s", Link::GetError());
+                            PrintLog(PRINT_ERROR, "[MOD] ERROR: Failed to find 'LinkModLogic' -> %s", Link::GetError());
                         }
                         info->unloadMod = (void (*)())Link::GetSymbol(linkHandle, "UnloadMod");
                         info->modLogicHandles.push_back(linkHandle);
@@ -738,7 +734,7 @@ bool32 RSDK::LoadMod(ModInfo *info, std::string modsPath, std::string folder, bo
 
                     if (!linked) {
                         // PrintLog(PRINT_NORMAL, "[MOD] Failed to load mod %s...", folder.c_str());
-                        PrintLog(PRINT_NORMAL, "[MOD] ERROR: failed to link logic '%s'", file.string().c_str());
+                        PrintLog(PRINT_NORMAL, "[MOD] ERROR: Failed to link logic '%s'", file.string().c_str());
 
                         iniparser_freedict(ini);
                         currentMod = cur;
@@ -903,7 +899,7 @@ void RSDK::SaveMods()
         for (int32 m = 0; m < modList.size(); ++m) {
             currentMod = &modList[m];
             SaveSettings();
-            WriteText(file, "%s=%c\n", currentMod->id.c_str(), currentMod->active ? 'y' : 'n');
+            WriteText(file, "%s=%c\n", currentMod->folderName.c_str(), currentMod->active ? 'y' : 'n');
         }
         fClose(file);
     }
@@ -1053,22 +1049,6 @@ void *RSDK::GetPublicFunction(const char *id, const char *functionName)
     return NULL;
 }
 
-void RSDK::GetModPath(const char *id, String *result)
-{
-    int32 m;
-    for (m = 0; m < modList.size(); ++m) {
-        if (modList[m].active && modList[m].id == id)
-            break;
-    }
-
-    if (m == modList.size())
-        return;
-
-    char buf[0x200];
-    sprintf_s(buf, sizeof(buf), "%smods/%s", SKU::userFileDir, id);
-    InitString(result, buf, 0);
-}
-
 std::string GetModPath_i(const char *id)
 {
     int32 m;
@@ -1080,7 +1060,17 @@ std::string GetModPath_i(const char *id)
     if (m == modList.size())
         return std::string();
 
-    return std::string(SKU::userFileDir) + "mods/" + id;
+    return modList[m].path;
+}
+
+void RSDK::GetModPath(const char *id, String *result)
+{
+    std::string modPath = GetModPath_i(id);
+
+    if (modPath.empty())
+        return;
+
+    InitString(result, modPath.c_str(), 0);
 }
 
 std::string GetModSettingsValue(const char *id, const char *key)
